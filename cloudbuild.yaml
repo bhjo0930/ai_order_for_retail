@@ -1,13 +1,23 @@
 steps:
-  # Build the container image
+  # Build the container image with optimized caching
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/mobile-voice-ordering:$COMMIT_SHA', '.']
+    args: 
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/mobile-voice-ordering:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/mobile-voice-ordering:latest'
+      - '--cache-from'
+      - 'gcr.io/$PROJECT_ID/mobile-voice-ordering:latest'
+      - '--target'
+      - 'runner'
+      - '.'
   
-  # Push the container image to Container Registry
+  # Push the container images to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/mobile-voice-ordering:$COMMIT_SHA']
+    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/mobile-voice-ordering']
   
-  # Deploy container image to Cloud Run
+  # Deploy container image to Cloud Run with comprehensive configuration
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -21,14 +31,65 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      # Resource allocation
       - '--memory'
       - '2Gi'
       - '--cpu'
       - '2'
+      - '--concurrency'
+      - '80'
+      # Scaling configuration
+      - '--min-instances'
+      - '0'
       - '--max-instances'
       - '10'
+      # Timeout and health checks
+      - '--timeout'
+      - '300'
+      - '--port'
+      - '8080'
+      # Environment variables
       - '--set-env-vars'
-      - 'NODE_ENV=production'
+      - 'NODE_ENV=production,PORT=8080,HOSTNAME=0.0.0.0'
+      # Service account for Google Cloud APIs
+      - '--service-account'
+      - 'mobile-voice-ordering@$PROJECT_ID.iam.gserviceaccount.com'
+      # Labels for organization
+      - '--labels'
+      - 'app=mobile-voice-ordering,environment=production,version=$SHORT_SHA'
+      # Execution environment
+      - '--execution-environment'
+      - 'gen2'
+      # CPU allocation
+      - '--cpu-boost'
 
+  # Update traffic to new revision (blue-green deployment)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'services'
+      - 'update-traffic'
+      - 'mobile-voice-ordering'
+      - '--to-latest'
+      - '--region'
+      - 'asia-northeast3'
+
+# Specify timeout for the entire build
+timeout: '1200s'
+
+# Build options for optimization
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+# Images to be pushed to registry
 images:
   - 'gcr.io/$PROJECT_ID/mobile-voice-ordering:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/mobile-voice-ordering:latest'
+
+# Substitutions for environment-specific values
+substitutions:
+  _REGION: 'asia-northeast3'
+  _SERVICE_NAME: 'mobile-voice-ordering'

@@ -37,6 +37,26 @@ export interface AudioCaptureEvents {
   onError: (error: Error) => void;
   onPermissionDenied: () => void;
   onDeviceChange: (devices: MediaDeviceInfo[]) => void;
+  onQualityWarning: (metrics: AudioQualityMetrics) => void;
+  onNetworkError: (error: Error) => void;
+  onRecovery: (message: string) => void;
+}
+
+// Enhanced audio capture error
+export interface AudioCaptureError extends Error {
+  code: string;
+  category: 'permission' | 'device' | 'format' | 'quality' | 'browser_support';
+  recoverable: boolean;
+  suggestions: string[];
+}
+
+// Audio quality metrics (moved from voice-processing.ts for client use)
+export interface AudioQualityMetrics {
+  signalLevel: number;
+  noiseLevel: number;
+  signalToNoiseRatio: number;
+  clippingDetected: boolean;
+  qualityScore: number; // 0-1 scale
 }
 
 // Voice activity detection result
@@ -53,6 +73,7 @@ export class AudioCapture {
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private processorNode: ScriptProcessorNode | null = null;
+  private analyserNode: AnalyserNode | null = null;
   private isCapturing: boolean = false;
   private config: AudioCaptureConfig;
   private events: Partial<AudioCaptureEvents> = {};
@@ -60,6 +81,11 @@ export class AudioCapture {
   private lastVoiceActivity: boolean = false;
   private silenceStartTime: number = 0;
   private voiceStartTime: number = 0;
+  private qualityCheckInterval: NodeJS.Timeout | null = null;
+  private deviceMonitorInterval: NodeJS.Timeout | null = null;
+  private lastQualityMetrics: AudioQualityMetrics | null = null;
+  private permissionRetryCount: number = 0;
+  private readonly MAX_PERMISSION_RETRIES = 3;
 
   constructor(config: Partial<AudioCaptureConfig> = {}) {
     this.config = { ...DEFAULT_CAPTURE_CONFIG, ...config };
@@ -95,36 +121,90 @@ export class AudioCapture {
     }
   }
 
-  // Request microphone permissions
+  // Request microphone permissions with retry logic
   public async requestPermissions(): Promise<boolean> {
     try {
       if (!AudioCapture.isSupported()) {
-        throw new Error('Audio capture not supported in this browser');
+        const error = this.createAudioError(
+          'Audio capture not supported in this browser',
+          'browser_support',
+          false,
+          ['Please use a modern browser like Chrome, Firefox, or Safari', 'Ensure you are using HTTPS']
+        );
+        this.events.onError?.(error);
+        return false;
       }
 
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Check if permissions were previously denied
+      if (this.permissionRetryCount >= this.MAX_PERMISSION_RETRIES) {
+        const error = this.createAudioError(
+          'Maximum permission retry attempts exceeded',
+          'permission',
+          false,
+          ['Please manually enable microphone permissions in browser settings', 'Refresh the page and try again']
+        );
+        this.events.onError?.(error);
+        return false;
+      }
+
+      // Request microphone access with enhanced constraints
+      const constraints: MediaStreamConstraints = {
         audio: {
           sampleRate: this.config.sampleRate,
           channelCount: this.config.channels,
           echoCancellation: this.config.echoCancellation,
           noiseSuppression: this.config.noiseSuppression,
           autoGainControl: this.config.autoGainControl,
+          // Add additional constraints for better quality
+          latency: 0.01, // Low latency for real-time processing
+          volume: 1.0,
         },
-      });
+      };
 
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Test the stream briefly to ensure it's working
+      const testResult = await this.testAudioStream(stream);
+      
       // Stop the test stream
       stream.getTracks().forEach(track => track.stop());
 
+      if (!testResult.success) {
+        this.permissionRetryCount++;
+        const error = this.createAudioError(
+          `Audio stream test failed: ${testResult.error}`,
+          'quality',
+          true,
+          ['Check microphone connection', 'Try a different microphone', 'Restart your browser']
+        );
+        this.events.onError?.(error);
+        return false;
+      }
+
+      this.permissionRetryCount = 0; // Reset on success
       return true;
     } catch (error) {
+      this.permissionRetryCount++;
       console.error('Microphone permission denied:', error);
+      
+      const audioError = this.createAudioError(
+        error instanceof Error ? error.message : 'Permission denied',
+        'permission',
+        this.permissionRetryCount < this.MAX_PERMISSION_RETRIES,
+        [
+          'Click the microphone icon in your browser address bar',
+          'Select "Allow" when prompted for microphone access',
+          'Check browser settings for microphone permissions'
+        ]
+      );
+      
       this.events.onPermissionDenied?.();
+      this.events.onError?.(audioError);
       return false;
     }
   }
 
-  // Start audio capture
+  // Start audio capture with enhanced error handling
   public async startCapture(deviceId?: string): Promise<void> {
     try {
       if (this.isCapturing) {
@@ -135,10 +215,15 @@ export class AudioCapture {
       // Request permissions first
       const hasPermission = await this.requestPermissions();
       if (!hasPermission) {
-        throw new Error('Microphone permission required');
+        throw this.createAudioError(
+          'Microphone permission required',
+          'permission',
+          true,
+          ['Grant microphone permission when prompted', 'Check browser settings']
+        );
       }
 
-      // Get media stream
+      // Get media stream with enhanced constraints
       const constraints: MediaStreamConstraints = {
         audio: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -147,18 +232,49 @@ export class AudioCapture {
           echoCancellation: this.config.echoCancellation,
           noiseSuppression: this.config.noiseSuppression,
           autoGainControl: this.config.autoGainControl,
+          latency: 0.01,
+          volume: 1.0,
         },
       };
 
       this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-      // Create audio context
-      this.audioContext = new AudioContext({
-        sampleRate: this.config.sampleRate,
-      });
+      // Validate the media stream
+      if (!this.mediaStream || this.mediaStream.getAudioTracks().length === 0) {
+        throw this.createAudioError(
+          'No audio tracks available in media stream',
+          'device',
+          true,
+          ['Check microphone connection', 'Try a different microphone']
+        );
+      }
+
+      // Create audio context with error handling
+      try {
+        this.audioContext = new AudioContext({
+          sampleRate: this.config.sampleRate,
+        });
+      } catch (contextError) {
+        throw this.createAudioError(
+          'Failed to create audio context',
+          'browser_support',
+          false,
+          ['Browser may not support Web Audio API', 'Try a different browser']
+        );
+      }
+
+      // Resume audio context if suspended (required by some browsers)
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
 
       // Create source node
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+
+      // Create analyser node for quality monitoring
+      this.analyserNode = this.audioContext.createAnalyser();
+      this.analyserNode.fftSize = 2048;
+      this.analyserNode.smoothingTimeConstant = 0.8;
 
       // Create processor node for audio processing
       this.processorNode = this.audioContext.createScriptProcessor(
@@ -169,22 +285,43 @@ export class AudioCapture {
 
       // Set up audio processing
       this.processorNode.onaudioprocess = (event) => {
-        this.processAudioBuffer(event.inputBuffer);
+        this.processAudioBufferWithQualityCheck(event.inputBuffer);
       };
 
       // Connect nodes
-      this.sourceNode.connect(this.processorNode);
+      this.sourceNode.connect(this.analyserNode);
+      this.analyserNode.connect(this.processorNode);
       this.processorNode.connect(this.audioContext.destination);
 
       this.isCapturing = true;
       console.log('Audio capture started');
 
+      // Start quality monitoring
+      this.startQualityMonitoring();
+
+      // Start device monitoring
+      this.startDeviceMonitoring();
+
       // Monitor device changes
       navigator.mediaDevices.addEventListener('devicechange', this.handleDeviceChange.bind(this));
 
+      // Monitor stream health
+      this.monitorStreamHealth();
+
     } catch (error) {
       console.error('Failed to start audio capture:', error);
-      this.events.onError?.(error instanceof Error ? error : new Error('Unknown error'));
+      
+      if (error instanceof Error && 'code' in error) {
+        this.events.onError?.(error as AudioCaptureError);
+      } else {
+        const audioError = this.createAudioError(
+          error instanceof Error ? error.message : 'Unknown error',
+          'device',
+          true,
+          ['Check microphone connection', 'Restart browser', 'Try different device']
+        );
+        this.events.onError?.(audioError);
+      }
       throw error;
     }
   }
@@ -370,6 +507,11 @@ export class AudioStreamingClient {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
   private reconnectDelay: number = 1000;
+  private connectionTimeout: NodeJS.Timeout | null = null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private lastHeartbeat: Date = new Date();
+  private serverUrl: string = '';
+  private isRecovering: boolean = false;
 
   constructor(sessionId: string, captureConfig?: Partial<AudioCaptureConfig>) {
     this.sessionId = sessionId;
@@ -377,11 +519,17 @@ export class AudioStreamingClient {
     this.setupAudioCaptureEvents();
   }
 
-  // Connect to WebSocket server
+  // Connect to WebSocket server with enhanced error handling
   public async connect(serverUrl: string): Promise<void> {
     try {
+      this.serverUrl = serverUrl;
       const wsUrl = `${serverUrl.replace('http', 'ws')}/api/voice/stream?sessionId=${this.sessionId}`;
       
+      // Clear any existing connection
+      if (this.websocket) {
+        this.websocket.close();
+      }
+
       this.websocket = new WebSocket(wsUrl);
 
       return new Promise((resolve, reject) => {
@@ -390,9 +538,29 @@ export class AudioStreamingClient {
           return;
         }
 
+        // Set connection timeout
+        this.connectionTimeout = setTimeout(() => {
+          if (this.websocket?.readyState !== WebSocket.OPEN) {
+            this.websocket?.close();
+            reject(new Error('WebSocket connection timeout'));
+          }
+        }, 10000);
+
         this.websocket.onopen = () => {
           console.log('WebSocket connected');
           this.reconnectAttempts = 0;
+          this.isRecovering = false;
+          this.lastHeartbeat = new Date();
+          
+          // Clear connection timeout
+          if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+          }
+
+          // Start heartbeat
+          this.startHeartbeat();
+          
           resolve();
         };
 
@@ -402,23 +570,27 @@ export class AudioStreamingClient {
 
         this.websocket.onclose = (event) => {
           console.log('WebSocket closed:', event.code, event.reason);
-          this.handleWebSocketClose(event);
+          this.handleWebSocketCloseWithRecovery(event);
         };
 
         this.websocket.onerror = (error) => {
           console.error('WebSocket error:', error);
+          
+          // Clear connection timeout
+          if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+          }
+
+          // Emit network error event
+          this.audioCapture.events.onNetworkError?.(new Error('WebSocket connection failed'));
+          
           reject(new Error('WebSocket connection failed'));
         };
-
-        // Connection timeout
-        setTimeout(() => {
-          if (this.websocket?.readyState !== WebSocket.OPEN) {
-            reject(new Error('WebSocket connection timeout'));
-          }
-        }, 10000);
       });
     } catch (error) {
       console.error('Failed to connect WebSocket:', error);
+      this.audioCapture.events.onNetworkError?.(error instanceof Error ? error : new Error('Connection failed'));
       throw error;
     }
   }
@@ -541,7 +713,7 @@ export class AudioStreamingClient {
     }
   }
 
-  // Handle WebSocket messages
+  // Enhanced WebSocket message handling
   private handleWebSocketMessage(event: MessageEvent): void {
     try {
       const message = JSON.parse(event.data);
@@ -549,17 +721,47 @@ export class AudioStreamingClient {
       switch (message.type) {
         case 'transcription_result':
           console.log('Transcription result:', message.data);
-          // Emit custom event for transcription results
           window.dispatchEvent(new CustomEvent('transcriptionResult', { detail: message.data }));
           break;
 
         case 'error':
           console.error('Server error:', message.data.error);
+          
+          // Handle specific error types
+          if (message.data.category === 'voice' && message.data.recoverable) {
+            this.audioCapture.events.onRecovery?.('Attempting to recover from voice error...');
+          } else {
+            const error = new Error(message.data.error);
+            this.audioCapture.events.onNetworkError?.(error);
+          }
+          
           window.dispatchEvent(new CustomEvent('transcriptionError', { detail: message.data }));
           break;
 
         case 'ping':
-          console.log('Server ping:', message.data);
+          // Respond to server ping
+          this.sendWebSocketMessage({
+            type: 'pong',
+            sessionId: this.sessionId,
+            timestamp: Date.now(),
+          });
+          break;
+
+        case 'pong':
+          // Update last heartbeat time
+          this.lastHeartbeat = new Date();
+          break;
+
+        case 'quality_warning':
+          console.warn('Audio quality warning:', message.data);
+          if (message.data.metrics) {
+            this.audioCapture.events.onQualityWarning?.(message.data.metrics);
+          }
+          break;
+
+        case 'recovery_suggestion':
+          console.log('Recovery suggestion:', message.data.suggestion);
+          this.audioCapture.events.onRecovery?.(message.data.suggestion);
           break;
 
         default:
@@ -570,19 +772,357 @@ export class AudioStreamingClient {
     }
   }
 
-  // Handle WebSocket close
-  private handleWebSocketClose(event: CloseEvent): void {
+  // Enhanced WebSocket close handling with recovery
+  private handleWebSocketCloseWithRecovery(event: CloseEvent): void {
     this.isStreaming = false;
+    
+    // Stop heartbeat
+    this.stopHeartbeat();
 
-    // Attempt reconnection if not a normal close
-    if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
-      console.log(`Attempting to reconnect (${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})...`);
+    // Determine if reconnection should be attempted
+    const shouldReconnect = event.code !== 1000 && // Not a normal close
+                           event.code !== 1001 && // Not going away
+                           this.reconnectAttempts < this.maxReconnectAttempts &&
+                           !this.isRecovering;
+
+    if (shouldReconnect) {
+      this.isRecovering = true;
+      const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts);
       
-      setTimeout(() => {
-        this.reconnectAttempts++;
-        // Note: You would need to store the server URL to reconnect
-        // this.connect(serverUrl);
-      }, this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
+      console.log(`Attempting to reconnect (${this.reconnectAttempts + 1}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+      
+      setTimeout(async () => {
+        try {
+          this.reconnectAttempts++;
+          await this.connect(this.serverUrl);
+          
+          // If we were streaming before, restart streaming
+          if (this.audioCapture.getStatus().isCapturing) {
+            await this.startStreaming();
+          }
+          
+          this.audioCapture.events.onRecovery?.('Connection restored');
+          console.log('WebSocket reconnection successful');
+        } catch (error) {
+          console.error('WebSocket reconnection failed:', error);
+          
+          if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            const networkError = new Error('Maximum reconnection attempts exceeded');
+            this.audioCapture.events.onNetworkError?.(networkError);
+          }
+        }
+      }, delay);
+    } else if (event.code !== 1000) {
+      // Connection failed permanently
+      const networkError = new Error(`WebSocket connection lost: ${event.reason || 'Unknown reason'}`);
+      this.audioCapture.events.onNetworkError?.(networkError);
+    }
+  }
+
+  // Start heartbeat to monitor connection health
+  private startHeartbeat(): void {
+    this.heartbeatInterval = setInterval(() => {
+      if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+        this.sendWebSocketMessage({
+          type: 'ping',
+          sessionId: this.sessionId,
+          timestamp: Date.now(),
+        });
+        
+        // Check if we've received a recent heartbeat response
+        const timeSinceLastHeartbeat = Date.now() - this.lastHeartbeat.getTime();
+        if (timeSinceLastHeartbeat > 60000) { // 1 minute timeout
+          console.warn('Heartbeat timeout detected');
+          this.websocket.close(1006, 'Heartbeat timeout');
+        }
+      }
+    }, 30000); // Send heartbeat every 30 seconds
+  }
+
+  // Stop heartbeat
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  // Enhanced error handling methods for AudioCapture
+
+  /**
+   * Create audio capture error
+   */
+  private createAudioError(
+    message: string,
+    category: AudioCaptureError['category'],
+    recoverable: boolean,
+    suggestions: string[]
+  ): AudioCaptureError {
+    const error = new Error(message) as AudioCaptureError;
+    error.code = `AUDIO_${category.toUpperCase()}`;
+    error.category = category;
+    error.recoverable = recoverable;
+    error.suggestions = suggestions;
+    return error;
+  }
+
+  /**
+   * Test audio stream quality
+   */
+  private async testAudioStream(stream: MediaStream): Promise<{ success: boolean; error?: string }> {
+    try {
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        return { success: false, error: 'No audio tracks found' };
+      }
+
+      const track = audioTracks[0];
+      const settings = track.getSettings();
+      
+      // Check if settings match our requirements
+      if (settings.sampleRate && settings.sampleRate !== this.config.sampleRate) {
+        console.warn(`Sample rate mismatch: expected ${this.config.sampleRate}, got ${settings.sampleRate}`);
+      }
+
+      if (settings.channelCount && settings.channelCount !== this.config.channels) {
+        console.warn(`Channel count mismatch: expected ${this.config.channels}, got ${settings.channelCount}`);
+      }
+
+      // Test if track is active
+      if (track.readyState !== 'live') {
+        return { success: false, error: `Audio track not live: ${track.readyState}` };
+      }
+
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown test error' 
+      };
+    }
+  }
+
+  /**
+   * Process audio buffer with quality check
+   */
+  private processAudioBufferWithQualityCheck(inputBuffer: AudioBuffer): void {
+    try {
+      // Get audio data
+      const audioData = inputBuffer.getChannelData(0);
+      
+      // Calculate quality metrics
+      const qualityMetrics = this.calculateAudioQuality(audioData);
+      this.lastQualityMetrics = qualityMetrics;
+
+      // Check for quality issues
+      if (qualityMetrics.qualityScore < 0.3) {
+        this.events.onQualityWarning?.(qualityMetrics);
+      }
+
+      // Convert to PCM16
+      const pcm16Buffer = this.convertToPCM16(audioData);
+
+      // Perform voice activity detection if enabled
+      if (this.config.voiceActivityDetection) {
+        const voiceActivity = this.detectVoiceActivity(audioData);
+        this.handleVoiceActivity(voiceActivity);
+      }
+
+      // Send audio data
+      this.events.onAudioData?.(pcm16Buffer);
+
+    } catch (error) {
+      console.error('Error processing audio buffer:', error);
+      const audioError = this.createAudioError(
+        'Audio processing error',
+        'format',
+        true,
+        ['Check microphone connection', 'Restart audio capture']
+      );
+      this.events.onError?.(audioError);
+    }
+  }
+
+  /**
+   * Calculate audio quality metrics
+   */
+  private calculateAudioQuality(audioData: Float32Array): AudioQualityMetrics {
+    // Calculate RMS (signal level)
+    let rms = 0;
+    for (let i = 0; i < audioData.length; i++) {
+      rms += audioData[i] * audioData[i];
+    }
+    rms = Math.sqrt(rms / audioData.length);
+
+    // Estimate noise level (using quieter portions)
+    const sortedData = Array.from(audioData).map(Math.abs).sort((a, b) => a - b);
+    const noiseLevel = sortedData[Math.floor(sortedData.length * 0.1)]; // 10th percentile
+
+    // Calculate SNR
+    const signalToNoiseRatio = rms > 0 ? 20 * Math.log10(rms / Math.max(noiseLevel, 0.001)) : 0;
+
+    // Detect clipping
+    const clippingThreshold = 0.95;
+    const clippingDetected = audioData.some(sample => Math.abs(sample) > clippingThreshold);
+
+    // Calculate overall quality score
+    let qualityScore = 0;
+    qualityScore += Math.min(rms / 0.1, 1) * 0.4; // Signal strength (40%)
+    qualityScore += Math.min(Math.max(signalToNoiseRatio, 0) / 20, 1) * 0.4; // SNR (40%)
+    qualityScore += clippingDetected ? 0 : 0.2; // No clipping bonus (20%)
+
+    return {
+      signalLevel: rms,
+      noiseLevel,
+      signalToNoiseRatio,
+      clippingDetected,
+      qualityScore: Math.min(qualityScore, 1.0),
+    };
+  }
+
+  /**
+   * Start quality monitoring
+   */
+  private startQualityMonitoring(): void {
+    this.qualityCheckInterval = setInterval(() => {
+      if (this.lastQualityMetrics && this.lastQualityMetrics.qualityScore < 0.2) {
+        const error = this.createAudioError(
+          'Poor audio quality detected',
+          'quality',
+          true,
+          [
+            'Move closer to the microphone',
+            'Reduce background noise',
+            'Check microphone connection',
+            'Try a different microphone'
+          ]
+        );
+        this.events.onQualityWarning?.(this.lastQualityMetrics);
+      }
+    }, 5000); // Check every 5 seconds
+  }
+
+  /**
+   * Start device monitoring
+   */
+  private startDeviceMonitoring(): void {
+    this.deviceMonitorInterval = setInterval(() => {
+      if (this.mediaStream) {
+        const audioTracks = this.mediaStream.getAudioTracks();
+        if (audioTracks.length === 0 || audioTracks[0].readyState !== 'live') {
+          const error = this.createAudioError(
+            'Audio device disconnected',
+            'device',
+            true,
+            ['Check microphone connection', 'Reconnect audio device']
+          );
+          this.events.onError?.(error);
+        }
+      }
+    }, 10000); // Check every 10 seconds
+  }
+
+  /**
+   * Monitor stream health
+   */
+  private monitorStreamHealth(): void {
+    if (this.mediaStream) {
+      const audioTrack = this.mediaStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.addEventListener('ended', () => {
+          const error = this.createAudioError(
+            'Audio stream ended unexpectedly',
+            'device',
+            true,
+            ['Microphone may have been disconnected', 'Try restarting audio capture']
+          );
+          this.events.onError?.(error);
+        });
+
+        audioTrack.addEventListener('mute', () => {
+          console.warn('Audio track muted');
+        });
+
+        audioTrack.addEventListener('unmute', () => {
+          console.log('Audio track unmuted');
+          this.events.onRecovery?.('Audio stream recovered');
+        });
+      }
+    }
+  }
+
+  /**
+   * Get current audio quality metrics
+   */
+  public getAudioQualityMetrics(): AudioQualityMetrics | null {
+    return this.lastQualityMetrics;
+  }
+
+  /**
+   * Enhanced stop capture with cleanup
+   */
+  public async stopCapture(): Promise<void> {
+    try {
+      if (!this.isCapturing) {
+        console.warn('Audio capture not started');
+        return;
+      }
+
+      // Clear monitoring intervals
+      if (this.qualityCheckInterval) {
+        clearInterval(this.qualityCheckInterval);
+        this.qualityCheckInterval = null;
+      }
+
+      if (this.deviceMonitorInterval) {
+        clearInterval(this.deviceMonitorInterval);
+        this.deviceMonitorInterval = null;
+      }
+
+      // Disconnect and clean up nodes
+      if (this.processorNode) {
+        this.processorNode.disconnect();
+        this.processorNode = null;
+      }
+
+      if (this.analyserNode) {
+        this.analyserNode.disconnect();
+        this.analyserNode = null;
+      }
+
+      if (this.sourceNode) {
+        this.sourceNode.disconnect();
+        this.sourceNode = null;
+      }
+
+      // Close audio context
+      if (this.audioContext) {
+        await this.audioContext.close();
+        this.audioContext = null;
+      }
+
+      // Stop media stream
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => track.stop());
+        this.mediaStream = null;
+      }
+
+      // Remove device change listener
+      navigator.mediaDevices.removeEventListener('devicechange', this.handleDeviceChange.bind(this));
+
+      this.isCapturing = false;
+      this.lastQualityMetrics = null;
+      console.log('Audio capture stopped');
+
+    } catch (error) {
+      console.error('Failed to stop audio capture:', error);
+      const audioError = this.createAudioError(
+        'Error stopping audio capture',
+        'device',
+        false,
+        ['Refresh the page if issues persist']
+      );
+      this.events.onError?.(audioError);
     }
   }
 

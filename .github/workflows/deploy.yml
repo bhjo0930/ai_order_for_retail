@@ -1,0 +1,212 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT_ID }}
+  REGION: asia-northeast3
+  SERVICE_NAME: mobile-voice-ordering
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+      continue-on-error: true
+    
+    - name: Run tests
+      run: npm run test --run
+      env:
+        NODE_ENV: test
+    
+    - name: Build application
+      run: npm run build:production
+      env:
+        NODE_ENV: production
+        # Mock environment variables for build
+        NEXT_PUBLIC_SUPABASE_URL: https://mock.supabase.co
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: mock-key
+        SUPABASE_SERVICE_ROLE_KEY: mock-key
+        GEMINI_API_KEY: mock-key
+        GOOGLE_CLOUD_PROJECT_ID: mock-project
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/develop'
+    
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Google Cloud CLI
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GOOGLE_CLOUD_PROJECT_ID }}
+        export_default_credentials: true
+    
+    - name: Configure Docker for GCR
+      run: gcloud auth configure-docker
+    
+    - name: Build and push Docker image
+      run: |
+        docker build \
+          --target runner \
+          --cache-from gcr.io/$PROJECT_ID/$SERVICE_NAME:latest \
+          -t gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA \
+          -t gcr.io/$PROJECT_ID/$SERVICE_NAME:staging \
+          .
+        docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA
+        docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:staging
+    
+    - name: Deploy to Cloud Run (Staging)
+      id: deploy
+      run: |
+        gcloud run deploy $SERVICE_NAME-staging \
+          --image gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA \
+          --region $REGION \
+          --platform managed \
+          --allow-unauthenticated \
+          --memory 2Gi \
+          --cpu 2 \
+          --concurrency 80 \
+          --min-instances 0 \
+          --max-instances 5 \
+          --timeout 300 \
+          --port 8080 \
+          --set-env-vars "NODE_ENV=staging,PORT=8080,HOSTNAME=0.0.0.0,GOOGLE_CLOUD_PROJECT_ID=$PROJECT_ID" \
+          --service-account "mobile-voice-ordering@$PROJECT_ID.iam.gserviceaccount.com" \
+          --labels "app=mobile-voice-ordering,environment=staging,version=$GITHUB_SHA" \
+          --execution-environment gen2 \
+          --cpu-boost
+        
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME-staging --region $REGION --format 'value(status.url)')
+        echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+    
+    - name: Run health check
+      run: |
+        sleep 30
+        curl -f ${{ steps.deploy.outputs.url }}/api/health
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Google Cloud CLI
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GOOGLE_CLOUD_PROJECT_ID }}
+        export_default_credentials: true
+    
+    - name: Configure Docker for GCR
+      run: gcloud auth configure-docker
+    
+    - name: Build and push Docker image
+      run: |
+        docker build \
+          --target runner \
+          --cache-from gcr.io/$PROJECT_ID/$SERVICE_NAME:latest \
+          -t gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA \
+          -t gcr.io/$PROJECT_ID/$SERVICE_NAME:latest \
+          .
+        docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA
+        docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
+    
+    - name: Deploy to Cloud Run (Production)
+      id: deploy
+      run: |
+        gcloud run deploy $SERVICE_NAME \
+          --image gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA \
+          --region $REGION \
+          --platform managed \
+          --allow-unauthenticated \
+          --memory 2Gi \
+          --cpu 2 \
+          --concurrency 80 \
+          --min-instances 0 \
+          --max-instances 10 \
+          --timeout 300 \
+          --port 8080 \
+          --set-env-vars "NODE_ENV=production,PORT=8080,HOSTNAME=0.0.0.0,GOOGLE_CLOUD_PROJECT_ID=$PROJECT_ID" \
+          --service-account "mobile-voice-ordering@$PROJECT_ID.iam.gserviceaccount.com" \
+          --labels "app=mobile-voice-ordering,environment=production,version=$GITHUB_SHA" \
+          --execution-environment gen2 \
+          --cpu-boost
+        
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region $REGION --format 'value(status.url)')
+        echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+    
+    - name: Run health check
+      run: |
+        sleep 30
+        curl -f ${{ steps.deploy.outputs.url }}/api/health
+    
+    - name: Update traffic to new revision
+      run: |
+        gcloud run services update-traffic $SERVICE_NAME \
+          --to-latest \
+          --region $REGION
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "dev:websocket": "tsx src/lib/server/websocket-server.ts",
-    "build": "next build --turbopack",
+    "build": "next build",
+    "build:production": "NODE_ENV=production next build",
     "start": "next start",
     "start:websocket": "tsx src/lib/server/websocket-server.ts",
     "lint": "eslint",
@@ -13,7 +14,12 @@
     "test:ui": "vitest --ui",
     "deploy": "./scripts/deploy.sh",
     "docker:build": "docker build -t mobile-voice-ordering .",
-    "docker:run": "docker run -p 3000:3000 mobile-voice-ordering",
+    "docker:build:production": "docker build -t mobile-voice-ordering:production --target runner .",
+    "docker:run": "docker run -p 8080:8080 mobile-voice-ordering",
+    "docker:run:production": "docker run -p 8080:8080 -e NODE_ENV=production mobile-voice-ordering:production",
+    "docker:test": "docker run --rm mobile-voice-ordering:production node /app/health-check.js",
+    "gcloud:build": "gcloud builds submit --tag gcr.io/$GOOGLE_CLOUD_PROJECT_ID/mobile-voice-ordering",
+    "gcloud:deploy": "gcloud run deploy mobile-voice-ordering --image gcr.io/$GOOGLE_CLOUD_PROJECT_ID/mobile-voice-ordering --platform managed",
     "supabase:schema": "supabase db reset --db-url $NEXT_PUBLIC_SUPABASE_URL"
   },
   "dependencies": {

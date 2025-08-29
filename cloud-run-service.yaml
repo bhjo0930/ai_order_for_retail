@@ -1,0 +1,167 @@
+# Google Cloud Run service configuration
+# This file defines the Cloud Run service specification for the Mobile Voice Ordering System
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mobile-voice-ordering
+  labels:
+    app: mobile-voice-ordering
+    environment: production
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/cpu-throttling: "false"
+spec:
+  template:
+    metadata:
+      labels:
+        app: mobile-voice-ordering
+        version: latest
+      annotations:
+        # Scaling configuration
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+        
+        # Resource allocation
+        run.googleapis.com/memory: "2Gi"
+        run.googleapis.com/cpu: "2"
+        
+        # Execution environment
+        run.googleapis.com/execution-environment: gen2
+        
+        # Service account for Google Cloud APIs
+        run.googleapis.com/service-account: mobile-voice-ordering@PROJECT_ID.iam.gserviceaccount.com
+        
+        # Networking
+        run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/locations/REGION/connectors/default-connector
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+        
+        # Startup and health checks
+        run.googleapis.com/startup-cpu-boost: "true"
+        
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: mobile-voice-ordering@PROJECT_ID.iam.gserviceaccount.com
+      
+      containers:
+      - name: mobile-voice-ordering
+        image: gcr.io/PROJECT_ID/mobile-voice-ordering:latest
+        
+        ports:
+        - name: http1
+          containerPort: 8080
+          protocol: TCP
+        
+        env:
+        # Application configuration
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "8080"
+        - name: HOSTNAME
+          value: "0.0.0.0"
+        - name: NEXT_TELEMETRY_DISABLED
+          value: "1"
+        
+        # Google Cloud configuration
+        - name: GOOGLE_CLOUD_PROJECT_ID
+          value: "PROJECT_ID"
+        
+        # Supabase configuration (set via Secret Manager)
+        - name: NEXT_PUBLIC_SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: supabase-url
+              key: latest
+        - name: NEXT_PUBLIC_SUPABASE_ANON_KEY
+          valueFrom:
+            secretKeyRef:
+              name: supabase-anon-key
+              key: latest
+        - name: SUPABASE_SERVICE_ROLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: supabase-service-role-key
+              key: latest
+        
+        # Gemini AI configuration (set via Secret Manager)
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-api-key
+              key: latest
+        
+        # Mock payment configuration
+        - name: MOCK_PAYMENT_SUCCESS_RATE
+          value: "0.9"
+        - name: MOCK_PAYMENT_DELAY_MS
+          value: "2000"
+        
+        # Security configuration
+        - name: NEXTAUTH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: nextauth-secret
+              key: latest
+        - name: NEXTAUTH_URL
+          value: "https://mobile-voice-ordering-HASH-REGION.a.run.app"
+        
+        # Logging configuration
+        - name: LOG_LEVEL
+          value: "info"
+        - name: ENABLE_STRUCTURED_LOGGING
+          value: "true"
+        
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+          requests:
+            cpu: "1000m"
+            memory: "512Mi"
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+            httpHeaders:
+            - name: User-Agent
+              value: GoogleHC/1.0
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          successThreshold: 1
+        
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+            httpHeaders:
+            - name: User-Agent
+              value: GoogleHC/1.0
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+            httpHeaders:
+            - name: User-Agent
+              value: GoogleHC/1.0
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+          successThreshold: 1
+
+  traffic:
+  - percent: 100
+    latestRevision: true

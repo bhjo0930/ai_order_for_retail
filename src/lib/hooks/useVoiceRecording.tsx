@@ -88,14 +88,124 @@ export function useVoiceRecording(options: VoiceRecordingOptions = {}) {
       opts.onError?.(error);
     };
 
+    // Enhanced error handling
+    const handleVoiceError = (event: CustomEvent<any>) => {
+      const error = event.detail;
+      setState(prev => ({
+        ...prev,
+        isProcessing: false,
+        error: error.message || 'Voice processing error',
+      }));
+      opts.onError?.(error);
+    };
+
+    const handleVoicePermissionError = (event: CustomEvent<any>) => {
+      const { error, suggestions } = event.detail;
+      setState(prev => ({
+        ...prev,
+        hasPermission: false,
+        error: `${error.message}. Suggestions: ${suggestions.join(', ')}`,
+      }));
+      opts.onError?.(error);
+    };
+
+    const handleVoiceQualityError = (event: CustomEvent<any>) => {
+      const { error, suggestions } = event.detail;
+      setState(prev => ({
+        ...prev,
+        error: `Audio quality issue: ${error.message}. Try: ${suggestions.join(', ')}`,
+      }));
+      opts.onError?.(error);
+    };
+
+    const handleVoiceDeviceError = (event: CustomEvent<any>) => {
+      const { error, suggestions } = event.detail;
+      setState(prev => ({
+        ...prev,
+        error: `Device error: ${error.message}. Try: ${suggestions.join(', ')}`,
+      }));
+      opts.onError?.(error);
+    };
+
+    const handleVoiceNetworkError = (event: CustomEvent<any>) => {
+      const error = event.detail;
+      setState(prev => ({
+        ...prev,
+        isConnected: false,
+        error: `Network error: ${error.message}`,
+      }));
+      opts.onError?.(error);
+    };
+
+    const handleVoiceRecovery = (event: CustomEvent<any>) => {
+      const message = event.detail;
+      setState(prev => ({
+        ...prev,
+        error: null, // Clear error on recovery
+      }));
+      console.log('Voice recovery:', message);
+    };
+
+    const handleVoiceQualityWarning = (event: CustomEvent<any>) => {
+      const metrics = event.detail;
+      console.warn('Audio quality warning:', metrics);
+      // Could update state with quality metrics if needed
+    };
+
+    const handleVoiceActivityStart = () => {
+      setState(prev => ({ ...prev, voiceActivity: true }));
+      opts.onVoiceStart?.();
+    };
+
+    const handleVoiceActivityEnd = () => {
+      setState(prev => ({ ...prev, voiceActivity: false }));
+      opts.onVoiceEnd?.();
+    };
+
+    const handleVoicePermissionDenied = () => {
+      setState(prev => ({
+        ...prev,
+        hasPermission: false,
+        error: 'Microphone permission denied',
+      }));
+    };
+
+    const handleVoiceDeviceChange = (event: CustomEvent<any>) => {
+      const devices = event.detail;
+      console.log('Audio devices changed:', devices);
+      // Could trigger device re-selection if needed
+    };
+
     // Add event listeners
     window.addEventListener('transcriptionResult', handleTranscriptionResult as EventListener);
     window.addEventListener('transcriptionError', handleTranscriptionError as EventListener);
+    window.addEventListener('voiceError', handleVoiceError as EventListener);
+    window.addEventListener('voicePermissionError', handleVoicePermissionError as EventListener);
+    window.addEventListener('voiceQualityError', handleVoiceQualityError as EventListener);
+    window.addEventListener('voiceDeviceError', handleVoiceDeviceError as EventListener);
+    window.addEventListener('voiceNetworkError', handleVoiceNetworkError as EventListener);
+    window.addEventListener('voiceRecovery', handleVoiceRecovery as EventListener);
+    window.addEventListener('voiceQualityWarning', handleVoiceQualityWarning as EventListener);
+    window.addEventListener('voiceActivityStart', handleVoiceActivityStart as EventListener);
+    window.addEventListener('voiceActivityEnd', handleVoiceActivityEnd as EventListener);
+    window.addEventListener('voicePermissionDenied', handleVoicePermissionDenied as EventListener);
+    window.addEventListener('voiceDeviceChange', handleVoiceDeviceChange as EventListener);
 
     // Cleanup
     return () => {
       window.removeEventListener('transcriptionResult', handleTranscriptionResult as EventListener);
       window.removeEventListener('transcriptionError', handleTranscriptionError as EventListener);
+      window.removeEventListener('voiceError', handleVoiceError as EventListener);
+      window.removeEventListener('voicePermissionError', handleVoicePermissionError as EventListener);
+      window.removeEventListener('voiceQualityError', handleVoiceQualityError as EventListener);
+      window.removeEventListener('voiceDeviceError', handleVoiceDeviceError as EventListener);
+      window.removeEventListener('voiceNetworkError', handleVoiceNetworkError as EventListener);
+      window.removeEventListener('voiceRecovery', handleVoiceRecovery as EventListener);
+      window.removeEventListener('voiceQualityWarning', handleVoiceQualityWarning as EventListener);
+      window.removeEventListener('voiceActivityStart', handleVoiceActivityStart as EventListener);
+      window.removeEventListener('voiceActivityEnd', handleVoiceActivityEnd as EventListener);
+      window.removeEventListener('voicePermissionDenied', handleVoicePermissionDenied as EventListener);
+      window.removeEventListener('voiceDeviceChange', handleVoiceDeviceChange as EventListener);
       
       if (streamingClientRef.current) {
         streamingClientRef.current.stopStreaming();

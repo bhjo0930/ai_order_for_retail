@@ -380,8 +380,9 @@ export class OrderService {
       specialInstructions: dbOrder.special_instructions
     };
   }
-}// S
-ession operations
+}
+
+// Session operations
 export class SessionService {
   static async createSession(sessionId: string, userId?: string): Promise<ConversationSession> {
     const sessionData = {
@@ -715,13 +716,4 @@ export class OrderCalculationService {
   }
 }
 
-// Export all services
-export {
-  ProductService,
-  CouponService,
-  OrderService,
-  SessionService,
-  PaymentService,
-  StoreLocationService,
-  OrderCalculationService
-};
+// All services are already exported above as classes

@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { paymentIntegrationService } from '@/lib/services/payment-integration';
-import { mockPaymentService } from '@/lib/services/mock-payment';
+
+// Lazy load services to avoid build-time initialization
+const getPaymentServices = async () => {
+  const { paymentIntegrationService } = await import('@/lib/services/payment-integration');
+  const { mockPaymentService } = await import('@/lib/services/mock-payment');
+  return { paymentIntegrationService, mockPaymentService };
+};
 
 export async function POST(request: NextRequest) {
   try {
+    const { paymentIntegrationService, mockPaymentService } = await getPaymentServices();
     const { action, ...params } = await request.json();
 
     switch (action) {

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { agentRouter } from '@/lib/services/agent-router';
 import { UserInput } from '@/lib/types';
+
+// Lazy load agent router to avoid build-time initialization
+const getAgentRouter = async () => {
+  const { agentRouter } = await import('@/lib/services/agent-router');
+  return agentRouter;
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -26,6 +31,7 @@ export async function POST(request: NextRequest) {
     };
 
     // Route through agent router
+    const agentRouter = await getAgentRouter();
     const result = await agentRouter.routeUserInput(sessionId, userInput);
 
     if (!result.success) {

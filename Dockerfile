@@ -1,59 +1,79 @@
-# Use the official Node.js 18 image as base
-FROM node:18-alpine AS base
+# Multi-stage Dockerfile optimized for Google Cloud Run
+# Use Node.js 20 LTS for better performance and security
+FROM node:20-alpine AS base
 
-# Install dependencies only when needed
-FROM base AS deps
-# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
-RUN apk add --no-cache libc6-compat
+# Install system dependencies and security updates
+RUN apk add --no-cache \
+    libc6-compat \
+    dumb-init \
+    && apk upgrade --no-cache
+
+# Set working directory
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY package.json package-lock.json* ./
-RUN npm ci
+# Create non-root user for security
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
 
-# Rebuild the source code only when needed
+# Stage 1: Install dependencies
+FROM base AS deps
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install all dependencies (including devDependencies for build)
+RUN npm ci --frozen-lockfile && \
+    npm cache clean --force
+
+# Stage 2: Build application
 FROM base AS builder
 WORKDIR /app
+
+# Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
+
+# Copy source code
 COPY . .
 
-# Next.js collects completely anonymous telemetry data about general usage.
-# Learn more here: https://nextjs.org/telemetry
-# Uncomment the following line in case you want to disable telemetry during the build.
-ENV NEXT_TELEMETRY_DISABLED 1
+# Set build-time environment variables
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
 
-RUN npm run build
+# Build the application (skip linting for production build)
+RUN npm run build:production
 
-# Production image, copy all the files and run next
+# Stage 3: Production runtime
 FROM base AS runner
 WORKDIR /app
 
-ENV NODE_ENV production
-# Uncomment the following line in case you want to disable telemetry during runtime.
-ENV NEXT_TELEMETRY_DISABLED 1
+# Set production environment
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+# Set Cloud Run specific environment variables
+ENV PORT=8080
+ENV HOSTNAME="0.0.0.0"
 
-COPY --from=builder /app/public ./public
-
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
+# Copy built application from builder stage
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Copy health check and startup scripts
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/health-check.js /app/health-check.js
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/start.js /app/start.js
+
+# Switch to non-root user
 USER nextjs
 
-EXPOSE 3000
+# Expose the port that Cloud Run expects
+EXPOSE 8080
 
-ENV PORT 3000
-# set hostname to localhost
-ENV HOSTNAME "0.0.0.0"
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node /app/health-check.js
 
-# server.js is created by next build from the standalone output
-# https://nextjs.org/docs/pages/api-reference/next-config-js/output
-CMD ["node", "server.js"]
+# Use dumb-init to handle signals properly and start with graceful shutdown wrapper
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "/app/start.js"]

@@ -1,0 +1,102 @@
+# Google Cloud Monitoring Alerting Policies
+# This file defines alerting policies for the Mobile Voice Ordering System
+
+# High Error Rate Alert
+- displayName: "Mobile Voice Ordering - High Error Rate"
+  documentation:
+    content: "Error rate for Mobile Voice Ordering System is above 5%"
+    mimeType: "text/markdown"
+  conditions:
+    - displayName: "Error rate condition"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="mobile-voice-ordering"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 0.05
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_RATE
+            crossSeriesReducer: REDUCE_MEAN
+            groupByFields:
+              - "resource.labels.service_name"
+  alertStrategy:
+    autoClose: "1800s"
+  combiner: OR
+  enabled: true
+  notificationChannels:
+    - "projects/PROJECT_ID/notificationChannels/NOTIFICATION_CHANNEL_ID"
+
+# High Response Time Alert  
+- displayName: "Mobile Voice Ordering - High Response Time"
+  documentation:
+    content: "Response time for Mobile Voice Ordering System is above 5 seconds"
+    mimeType: "text/markdown"
+  conditions:
+    - displayName: "Response time condition"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="mobile-voice-ordering" AND metric.type="run.googleapis.com/request_latencies"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 5000
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_DELTA
+            crossSeriesReducer: REDUCE_PERCENTILE_95
+            groupByFields:
+              - "resource.labels.service_name"
+  alertStrategy:
+    autoClose: "1800s"
+  combiner: OR
+  enabled: true
+  notificationChannels:
+    - "projects/PROJECT_ID/notificationChannels/NOTIFICATION_CHANNEL_ID"
+
+# Low Instance Count Alert
+- displayName: "Mobile Voice Ordering - Service Down"
+  documentation:
+    content: "Mobile Voice Ordering System has no running instances"
+    mimeType: "text/markdown"
+  conditions:
+    - displayName: "Instance count condition"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="mobile-voice-ordering" AND metric.type="run.googleapis.com/container/instance_count"'
+        comparison: COMPARISON_LESS_THAN
+        thresholdValue: 1
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_SUM
+            groupByFields:
+              - "resource.labels.service_name"
+  alertStrategy:
+    autoClose: "300s"
+  combiner: OR
+  enabled: true
+  notificationChannels:
+    - "projects/PROJECT_ID/notificationChannels/NOTIFICATION_CHANNEL_ID"
+
+# High Memory Usage Alert
+- displayName: "Mobile Voice Ordering - High Memory Usage"
+  documentation:
+    content: "Memory usage for Mobile Voice Ordering System is above 80%"
+    mimeType: "text/markdown"
+  conditions:
+    - displayName: "Memory usage condition"
+      conditionThreshold:
+        filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="mobile-voice-ordering" AND metric.type="run.googleapis.com/container/memory/utilizations"'
+        comparison: COMPARISON_GREATER_THAN
+        thresholdValue: 0.8
+        duration: "300s"
+        aggregations:
+          - alignmentPeriod: "60s"
+            perSeriesAligner: ALIGN_MEAN
+            crossSeriesReducer: REDUCE_MEAN
+            groupByFields:
+              - "resource.labels.service_name"
+  alertStrategy:
+    autoClose: "1800s"
+  combiner: OR
+  enabled: true
+  notificationChannels:
+    - "projects/PROJECT_ID/notificationChannels/NOTIFICATION_CHANNEL_ID"

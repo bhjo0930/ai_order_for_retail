@@ -1,15 +1,67 @@
-Dockerfile
+# Build context optimization for Google Cloud Run
+Dockerfile*
 .dockerignore
-node_modules
-npm-debug.log
 README.md
-.env
-.env.local
-.env.production.local
-.env.local
 .git
 .gitignore
+
+# Dependencies (will be installed in container)
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (will be set via Cloud Run)
+.env*
+!.env.example
+
+# Build outputs (will be generated in container)
 .next
-.vercel
+out
+dist
+build
+
+# Development and testing files
 coverage
 .nyc_output
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts
+__tests__
+.vitest
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Deployment and CI/CD
+.vercel
+.github
+cloudbuild.yaml
+scripts/deploy.sh
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Temporary files
+tmp/
+temp/
