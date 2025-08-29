@@ -1,0 +1,46 @@
+{
+  "name": "mobile-voice-ordering",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "dev:websocket": "tsx src/lib/server/websocket-server.ts",
+    "build": "next build --turbopack",
+    "start": "next start",
+    "start:websocket": "tsx src/lib/server/websocket-server.ts",
+    "lint": "eslint",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "deploy": "./scripts/deploy.sh",
+    "docker:build": "docker build -t mobile-voice-ordering .",
+    "docker:run": "docker run -p 3000:3000 mobile-voice-ordering",
+    "supabase:schema": "supabase db reset --db-url $NEXT_PUBLIC_SUPABASE_URL"
+  },
+  "dependencies": {
+    "@google-cloud/speech": "^7.2.0",
+    "@google/generative-ai": "^0.24.1",
+    "@supabase/supabase-js": "^2.56.0",
+    "clsx": "^2.1.1",
+    "next": "15.5.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "socket.io-client": "^4.8.1",
+    "tailwind-merge": "^3.3.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "@vitest/ui": "^3.2.4",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.2",
+    "tailwindcss": "^4",
+    "tsx": "^4.20.5",
+    "typescript": "^5",
+    "vitest": "^3.2.4"
+  }
+}
