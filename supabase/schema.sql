@@ -1,11 +1,11 @@
 -- Create the schema for the AI ordering system
-CREATE SCHEMA IF NOT EXISTS ai_order;
+CREATE SCHEMA IF NOT EXISTS ai_order_gemini;
 
 -- Set the search path to include the new schema
-SET search_path = ai_order, public;
+SET search_path = ai_order_gemini, public;
 
 -- Products Table
-CREATE TABLE IF NOT EXISTS ai_order.products (
+CREATE TABLE IF NOT EXISTS ai_order_gemini.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     description TEXT,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS ai_order.products (
 );
 
 -- Coupons Table
-CREATE TABLE IF NOT EXISTS ai_order.coupons (
+CREATE TABLE IF NOT EXISTS ai_order_gemini.coupons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS ai_order.coupons (
 );
 
 -- Orders Table
-CREATE TABLE IF NOT EXISTS ai_order.orders (
+CREATE TABLE IF NOT EXISTS ai_order_gemini.orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT,
     customer_id UUID,
@@ -60,14 +60,14 @@ CREATE TABLE IF NOT EXISTS ai_order.orders (
 );
 
 -- Conversation Sessions Table
-CREATE TABLE IF NOT EXISTS ai_order.sessions (
+CREATE TABLE IF NOT EXISTS ai_order_gemini.sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL UNIQUE,
     user_id UUID,
     current_state TEXT,
     conversation_history JSONB,
     cart JSONB,
-    current_order_id UUID REFERENCES ai_order.orders(id),
+    current_order_id UUID REFERENCES ai_order_gemini.orders(id),
     preferences JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -75,29 +75,29 @@ CREATE TABLE IF NOT EXISTS ai_order.sessions (
 );
 
 -- Enable Row Level Security (RLS) for all tables
-ALTER TABLE ai_order.products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ai_order.coupons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ai_order.orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ai_order.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_order_gemini.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_order_gemini.coupons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_order_gemini.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_order_gemini.sessions ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies (example: allow public read access for products)
 CREATE POLICY "Allow public read access on products"
-ON ai_order.products FOR SELECT
+ON ai_order_gemini.products FOR SELECT
 USING (is_active = TRUE);
 
 -- Allow all access for authenticated users on their own orders
 CREATE POLICY "Allow users to manage their own orders"
-ON ai_order.orders FOR ALL
+ON ai_order_gemini.orders FOR ALL
 USING (auth.uid() = customer_id)
 WITH CHECK (auth.uid() = customer_id);
 
 -- Allow users to manage their own sessions
 CREATE POLICY "Allow users to manage their own sessions"
-ON ai_order.sessions FOR ALL
+ON ai_order_gemini.sessions FOR ALL
 USING (auth.uid() = user_id)
 WITH CHECK (auth.uid() = user_id);
 
 -- Grant usage on schema and tables to authenticated role
-GRANT USAGE ON SCHEMA ai_order TO authenticated;
-GRANT ALL ON ALL TABLES IN SCHEMA ai_order TO authenticated;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ai_order TO authenticated;
+GRANT USAGE ON SCHEMA ai_order_gemini TO authenticated;
+GRANT ALL ON ALL TABLES IN SCHEMA ai_order_gemini TO authenticated;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ai_order_gemini TO authenticated;
